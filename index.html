@@ -1,0 +1,110 @@
+<!-- with much help from https://www.youtube.com/watch?v=gAHYTqQAvxw -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/smoothie/1.34.0/smoothie.min.js" integrity="sha256-s4pCizM36ibu/qMLSJHZLwhA5sV0/Jn1J/1TrzryEKQ=" crossorigin="anonymous"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/tracking.js/1.1.3/tracking-min.js" integrity="sha256-tTzggcG45kvlQd/lMp1iI1SR4R0vC4Cx9/J1GegZ32A=" crossorigin="anonymous"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/tracking.js/1.1.3/data/face-min.js" integrity="sha256-Pw80MUZrPUlHhuKID84GDaXTs0f2SDyTqac+GqdKiho=" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/fili@2.0.1/dist/fili.min.js"></script>
+<video width="300" height="200" id="video" controls autoplay style="visibility: hidden; position: absolute; left: -10000px;"></video>
+<canvas id="rawcanvas" width="300" height="200"></canvas>
+<canvas id="croppedcanvas" width="300" height="250"></canvas>
+<div style="display:inline-block">
+<canvas id="rawchart" width="300px" height="100px" style="width: 300px; height: 100px; display: block;"></canvas>
+<canvas id="filteredchart" width="300px" height="100px" style="width: 300px; height: 100px; display: block;"></canvas>
+</div>
+<div>raw video, facebox with exponential-decay filtering, graphs of average red and filtered red.</div>
+<script>
+var zeropoint = 0;
+
+var rawchart = new SmoothieChart();
+var rawdata = [new TimeSeries(), new TimeSeries(), new TimeSeries()];
+rawchart.addTimeSeries(rawdata[0], { strokeStyle: 'rgba(255, 0, 0, 1)', fillStyle: 'rgba(255, 0, 0, 0.2)', lineWidth: 4 });
+rawchart.addTimeSeries(rawdata[1], { strokeStyle: 'rgba(0, 255, 0, 1)', fillStyle: 'rgba(0, 255, 0, 0.2)', lineWidth: 4 });
+rawchart.addTimeSeries(rawdata[2], { strokeStyle: 'rgba(0, 0, 255, 1)', fillStyle: 'rgba(0, 0, 255, 0.2)', lineWidth: 4 });
+rawchart.streamTo(document.getElementById("rawchart"), 0);
+
+var filteredchart = new SmoothieChart();
+var filtereddata = new TimeSeries();
+filteredchart.addTimeSeries(filtereddata, { strokeStyle: 'rgba(255, 0, 0, 1)', fillStyle: 'rgba(255, 0, 0, 0.2)', lineWidth: 4 });
+filteredchart.streamTo(document.getElementById("filteredchart"), 0);
+
+var iirCalculator = new Fili.CalcCascades();
+var iirFilterCoeffs = iirCalculator.bandpass({
+  order: 0.5, // cascade 3 biquad filters (max: 12)
+  characteristic: 'butterworth',
+  Fs: 100, // sampling frequency
+  Fc: 2, // cutoff frequency / center frequency for bandpass, bandstop, peak
+  BW: 3, // bandwidth only for bandstop and bandpass filters - optional
+  gain: 0, // gain for peak, lowshelf and highshelf
+  preGain: false // adds one constant multiplication for highpass and lowpass
+  // k = (1 + cos(omega)) * 0.5 / k = 1 with preGain == false
+});
+var iirFilter = new Fili.IirFilter(iirFilterCoeffs);
+
+var video = document.getElementById('video');
+var rawcanvas = document.getElementById('rawcanvas');
+var rawctx = rawcanvas.getContext('2d');
+var croppedcanvas = document.getElementById('croppedcanvas');
+var croppedctx = croppedcanvas.getContext('2d');
+var tracker = new tracking.ObjectTracker('face');
+tracker.setInitialScale(4);
+tracker.setStepSize(1);
+tracker.setEdgesDensity(0.1);
+tracking.track(video, tracker, { camera: true });
+
+var rect;
+
+function updateRect(r){
+  if(r){
+    if(!rect)
+      rect = r;
+    else{
+      var dx = r.x - rect.x, dy = r.y - rect.y, 
+        dwidth = r.width - rect.width, dheight = r.height - rect.height;
+      rect.x += Math.min(dx * 0.03, 1);
+      rect.y += Math.min(dy * 0.03, 1);
+      rect.width += Math.min(dwidth * 0.03, 1);
+      rect.height += Math.min(dheight * 0.03, 1);
+    }
+  }
+}
+
+var toSkip = 40; // skip the chirp at the beginning
+tracker.on('track', function(event) {
+  rawctx.drawImage(video, 0,0, rawcanvas.width, rawcanvas.height);
+  if(event.data.length > 0) updateRect(event.data[0]); // TODO: foreach
+  event.data.forEach(function(rect){
+    // rawctx.strokeStyle = '#a64ceb';
+    // rawctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
+    // rawctx.font = '11px Helvetica';
+    // rawctx.fillStyle = "#fff";
+    // rawctx.fillText('x: ' + rect.x + 'px', rect.x + rect.width + 5, rect.y + 11);
+    // rawctx.fillText('y: ' + rect.y + 'px', rect.x + rect.width + 5, rect.y + 22);
+  });
+});
+
+setInterval(function(){
+  if(rect){
+    croppedctx.clearRect(0, 0, croppedcanvas.width, croppedcanvas.height);
+    croppedctx.drawImage(rawcanvas, rect.x, rect.y, rect.width, rect.height, 0, 0, rect.width * 2, rect.height * 2);
+
+    var frame = rawctx.getImageData(rect.x, rect.y, rect.width, rect.height);
+    var total = [0.0, 0.0, 0.0];
+    for(var y = 0; y < frame.height; y++)
+      for(var x = 0; x < frame.width; x++)
+        for(var c = 0; c < 3; c++)
+          total[c] += frame.data[(y * frame.width + x) * 4 + c];
+    var average = total.map(function(x){ return x / frame.height / frame.width; });
+    //console.log(averageRed);
+
+    // rawctx.putImageData(frame, 0, 0);
+
+    averageRedFiltered = iirFilter.singleStep(average[0])
+    if(toSkip > 0)
+      toSkip --;
+    else{
+      average.forEach(function(x, i){ rawdata[i].append(new Date().getTime(), x); });
+      filtereddata.append(new Date().getTime(), averageRedFiltered);
+    }
+  }
+}, 50);
+
+</script>
